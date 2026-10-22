@@ -95,6 +95,9 @@ public final class SearchDisplayController {
                 isFirstTime = false
             }
         }
+        self.contentNode.setAccessoryAccessibilityCustomActions = { [weak self] actions in
+            self?.searchBar?.accessoryAccessibilityCustomActions = actions
+        }
         if let placeholder = placeholder {
             self.searchBar?.placeholderString = NSAttributedString(string: placeholder, font: Font.regular(17.0), textColor: presentationData.theme.rootController.navigationSearchBar.inputPlaceholderTextColor)
         }

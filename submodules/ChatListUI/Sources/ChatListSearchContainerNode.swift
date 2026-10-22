@@ -675,6 +675,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
             self.context.sharedContext.mainWindow?.motionShake = { [weak self] in
                 self?.handleShake()
             }
+            // Shaking is not an option with VoiceOver: the field offers the same undo as a custom action.
+            self.setAccessoryAccessibilityCustomActions?([UIAccessibilityCustomAction(name: self.presentationData.strings.ChatList_Search_UndoForumScopeRemoval, actionHandler: { [weak self] _ in
+                guard let self, self.undoableForumScope != nil else {
+                    return false
+                }
+                self.restoreForumScope()
+                return true
+            })])
         } else if hadUndoableForumScope {
             // Only the container that had the undo releases the hook: a search that never had it (the forward picker's,
             // one with the flag off) must not wipe the hook of the search that has it.
@@ -683,12 +691,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
                 undoAlertController.dismiss()
             }
             self.context.sharedContext.mainWindow?.motionShake = nil
+            self.setAccessoryAccessibilityCustomActions?([])
         }
     }
     
     private func handleShake() {
         // Context menus and other global overlays keep the search in the hierarchy: a shake under them shows the alert below the overlay.
-        guard self.undoableForumScope != nil, self.undoAlertController == nil, self.view.window != nil, self.isUserInteractionEnabled else {
+        // Under VoiceOver the undo is the field's custom action; the alert has no accessibility labels.
+        guard self.undoableForumScope != nil, self.undoAlertController == nil, self.view.window != nil, self.isUserInteractionEnabled, !UIAccessibility.isVoiceOverRunning else {
             return
         }
         let strings = self.presentationData.strings

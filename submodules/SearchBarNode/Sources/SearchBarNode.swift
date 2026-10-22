@@ -455,6 +455,13 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
         }
     }
     
+    /// Actions the search's owner adds to the field; listed after the ones the tokens provide.
+    var accessoryAccessibilityCustomActions: [UIAccessibilityCustomAction] = [] {
+        didSet {
+            self.updateAccessibilityCustomActions()
+        }
+    }
+    
     private func updateAccessibilityCustomActions() {
         var actions: [UIAccessibilityCustomAction] = []
         for token in self.tokens {
@@ -470,6 +477,7 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
                 return true
             }))
         }
+        actions.append(contentsOf: self.accessoryAccessibilityCustomActions)
         self.accessibilityCustomActions = actions.isEmpty ? nil : actions
     }
     
@@ -1035,6 +1043,15 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
     /// next focus (see didRemoveToken).
     private var clearsUndoHistoryOnFocus = false
 
+    /// Extra VoiceOver custom actions for the text field, after the ones its tokens provide.
+    public var accessoryAccessibilityCustomActions: [UIAccessibilityCustomAction] {
+        get {
+            return self.textField.accessoryAccessibilityCustomActions
+        } set(value) {
+            self.textField.accessoryAccessibilityCustomActions = value
+        }
+    }
+    
     private let inlineSearchPlaceholder: SearchBarPlaceholderNode
     private var inlineSearchPlaceholderContentsView: SearchBarPlaceholderContentView?
     

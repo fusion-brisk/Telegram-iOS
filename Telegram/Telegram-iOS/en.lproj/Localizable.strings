@@ -13657,6 +13657,8 @@ Sorry for the inconvenience.";
 
 "ChatList.EmptyResult.SearchInAll" = "Search in All Messages";
 
+"ChatList.Search.RemoveForumScope" = "Search in all chats";
+
 "Gift.Options.GiftSelf.Title" = "Buy a Gift";
 "Gift.Options.GiftSelf.Text" = "Buy yourself a gift to display on your page or reserve for later.\n\nLimited-edition gifts upgraded to collectibles can be gifted to others later.";
 

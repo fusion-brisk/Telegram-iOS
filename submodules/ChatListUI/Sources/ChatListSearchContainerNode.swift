@@ -122,6 +122,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private var folder: (Int32, String)?
     private let displaySearchFilters: Bool
     private let hasDownloads: Bool
+    private let allowsForumScopeRemoval: Bool
     private var interaction: ChatListSearchInteraction?
     private let openMessage: (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void
     private let navigationController: NavigationController?
@@ -184,7 +185,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private var recentAppsDisposable: Disposable?
     private var refreshedGlobalPostSearchStateDisposable: Disposable?
     
-    public init(context: AccountContext, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, filter: ChatListNodePeersFilter, requestPeerType: [ReplyMarkupButtonRequestPeerType]?, excludedPeerIds: Set<EnginePeer.Id> = [], location: ChatListControllerLocation, communityId: EnginePeer.Id? = nil, folder: (Int32, String)?, displaySearchFilters: Bool, hasDownloads: Bool, initialFilter: ChatListSearchFilter = .chats, openPeer originalOpenPeer: @escaping (EnginePeer, EnginePeer?, Int64?, Bool) -> Void, openDisabledPeer: @escaping (EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void, openRecentPeerOptions: @escaping (EnginePeer) -> Void, openMessage originalOpenMessage: @escaping (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void, addContact: ((String) -> Void)?, peerContextAction: ((EnginePeer, ChatListSearchContextActionSource, ASDisplayNode, ContextGesture?, CGPoint?) -> Void)?, present: @escaping (ViewController, Any?) -> Void, presentInGlobalOverlay: @escaping (ViewController, Any?) -> Void, navigationController: NavigationController?, parentController: @escaping () -> ViewController?) {
+    public init(context: AccountContext, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, filter: ChatListNodePeersFilter, requestPeerType: [ReplyMarkupButtonRequestPeerType]?, excludedPeerIds: Set<EnginePeer.Id> = [], location: ChatListControllerLocation, communityId: EnginePeer.Id? = nil, folder: (Int32, String)?, displaySearchFilters: Bool, hasDownloads: Bool, allowsForumScopeRemoval: Bool = false, initialFilter: ChatListSearchFilter = .chats, openPeer originalOpenPeer: @escaping (EnginePeer, EnginePeer?, Int64?, Bool) -> Void, openDisabledPeer: @escaping (EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void, openRecentPeerOptions: @escaping (EnginePeer) -> Void, openMessage originalOpenMessage: @escaping (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void, addContact: ((String) -> Void)?, peerContextAction: ((EnginePeer, ChatListSearchContextActionSource, ASDisplayNode, ContextGesture?, CGPoint?) -> Void)?, present: @escaping (ViewController, Any?) -> Void, presentInGlobalOverlay: @escaping (ViewController, Any?) -> Void, navigationController: NavigationController?, parentController: @escaping () -> ViewController?) {
         var initialFilter = initialFilter
         if case .chats = initialFilter, case .forum = location {
             initialFilter = .topics
@@ -204,6 +205,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         
         self.displaySearchFilters = displaySearchFilters
         self.hasDownloads = hasDownloads
+        self.allowsForumScopeRemoval = allowsForumScopeRemoval
         self.navigationController = navigationController
         self.presentationData = updatedPresentationData?.initial ?? context.sharedContext.currentPresentationData.with { $0 }
         
@@ -634,6 +636,19 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         return self.searchOptionsValue ?? ChatListSearchOptions(peer: nil, date: nil, folder: nil)
     }
     
+    private func forumScopeToken(peer: EnginePeer) -> SearchBarToken {
+        return SearchBarToken(
+            id: ChatListTokenId.forum.rawValue,
+            icon: nil,
+            iconOffset: -1.0,
+            peer: (peer, self.context, self.presentationData.theme),
+            title: peer.compactDisplayTitle,
+            permanent: true,
+            removable: self.allowsForumScopeRemoval,
+            removeAccessibilityActionName: self.allowsForumScopeRemoval ? self.presentationData.strings.ChatList_Search_RemoveForumScope : nil
+        )
+    }
+    
     public override func searchTokensUpdated(tokens: [SearchBarToken]) {
         var updatedOptions = self.searchOptionsValue
         var tokensIdSet = Set<AnyHashable>()
@@ -644,6 +659,21 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location, !tokens.contains(where: { $0.id == AnyHashable(ChatListTokenId.archive.rawValue) }) {
             self.location = .chatList(groupId: .root)
             self.paneContainerNode.location = self.location
+        }
+        if case .forum = self.location, self.allowsForumScopeRemoval, self.forumPeer != nil, !tokens.contains(where: { $0.id == AnyHashable(ChatListTokenId.forum.rawValue) }) {
+            self.transitionFraction = 0.0
+            self.location = .chatList(groupId: .root)
+            self.selectedFilter = .filter(.chats)
+            self.selectedFilterPromise.set(.single(self.selectedFilter))
+            self.paneContainerNode.reset(location: self.location)
+            if self.stateValue.selectedMessageIds != nil {
+                self.updateState { state in
+                    return state.withUpdatedSelectedMessageIds(nil)
+                }
+            }
+            if let (layout, navigationBarHeight) = self.validLayout {
+                self.containerLayoutUpdated(layout, navigationBarHeight: navigationBarHeight, transition: .animated(duration: 0.3, curve: .easeInOut))
+            }
         }
         
         if !tokensIdSet.contains(ChatListTokenId.date.rawValue) && updatedOptions?.date != nil {
@@ -668,7 +698,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location {
             tokens.append(SearchBarToken(id: ChatListTokenId.archive.rawValue, icon: UIImage(bundleImageName: "Chat List/Search/Archive"), iconOffset: -1.0, title: self.presentationData.strings.ChatList_Archive, permanent: false))
         } else if case .forum = self.location, let forumPeer = self.forumPeer {
-            tokens.append(SearchBarToken(id: ChatListTokenId.forum.rawValue, icon: nil, iconOffset: -1.0, peer: (forumPeer, self.context, self.presentationData.theme), title: self.presentationData.strings.ChatList_Archive, permanent: true))
+            tokens.append(self.forumScopeToken(peer: forumPeer))
         }
         
         if options?.isEmpty ?? true {
@@ -766,7 +796,11 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         let key: ChatListSearchPaneKey
         switch filter {
         case .topics:
-            key = .topics
+            if case .forum = self.location {
+                key = .topics
+            } else {
+                key = .chats
+            }
         case .channels:
             key = .channels
         case .media:
@@ -797,7 +831,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location {
             tokens.append(SearchBarToken(id: ChatListTokenId.archive.rawValue, icon: UIImage(bundleImageName: "Chat List/Search/Archive"), iconOffset: -1.0, title: self.presentationData.strings.ChatList_Archive, permanent: false))
         } else if case .forum = self.location, let forumPeer = self.forumPeer {
-            tokens.append(SearchBarToken(id: ChatListTokenId.forum.rawValue, icon: nil, iconOffset: -1.0, peer: (forumPeer, self.context, self.presentationData.theme), title: self.presentationData.strings.ChatList_Archive, permanent: true))
+            tokens.append(self.forumScopeToken(peer: forumPeer))
         }
         self.setQuery?(nil, tokens, query ?? "")
     }

@@ -198,6 +198,11 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
     
     private(set) var currentPaneKey: ChatListSearchPaneKey?
     var pendingSwitchToPaneKey: ChatListSearchPaneKey?
+    /// Set by reset(location:), cleared when update(...) promotes the first pane of the new location.
+    /// Meanwhile the container paints nothing, so the opaque search container behind it shows instead of the
+    /// blocks colour: pending panes are not in the hierarchy yet, and in the dark theme a 0x1c1c1d frame
+    /// between the old and the new results is a visible flash.
+    private var isAwaitingFirstPaneAfterReset = false
     
     var currentPane: ChatListSearchPaneWrapper? {
         if let currentPaneKey = self.currentPaneKey {
@@ -235,6 +240,20 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
         self.globalPeerSearchContext = GlobalPeerSearchContext()
                 
         super.init()
+    }
+    
+    func reset(location: ChatListControllerLocation) {
+        self.location = location
+        for (_, pane) in self.currentPanes {
+            pane.node.removeFromSupernode()
+        }
+        self.currentPanes.removeAll()
+        self.pendingPanes.removeAll()
+        self.currentPaneKey = nil
+        self.pendingSwitchToPaneKey = nil
+        self.transitionFraction = 0.0
+        self.currentAvailablePanes = nil
+        self.isAwaitingFirstPaneAfterReset = true
     }
     
     func requestSelectPane(_ key: ChatListSearchPaneKey) {
@@ -402,6 +421,19 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
         }
     }
         
+    private func updateBackgroundColor(presentationData: PresentationData) {
+        switch self.location {
+        case .forum, .savedMessagesChats:
+            self.backgroundColor = .clear
+        default:
+            if self.isAwaitingFirstPaneAfterReset && self.currentPaneKey == nil {
+                self.backgroundColor = .clear
+            } else {
+                self.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
+            }
+        }
+    }
+    
     func update(size: CGSize, sideInsets: UIEdgeInsets, topInset: CGFloat, bottomInset: CGFloat, visibleHeight: CGFloat, presentationData: PresentationData, availablePanes: [ChatListSearchPaneKey], transition: ContainedViewLayoutTransition) {
         let previousAvailablePanes = self.currentAvailablePanes ?? []
         self.currentAvailablePanes = availablePanes
@@ -438,12 +470,7 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
         
         self.currentParams = (size, sideInsets, topInset, bottomInset, visibleHeight, presentationData, availablePanes)
                 
-        switch self.location {
-        case .forum, .savedMessagesChats:
-            self.backgroundColor = .clear
-        default:
-            self.backgroundColor = presentationData.theme.list.itemBlocksBackgroundColor
-        }
+        self.updateBackgroundColor(presentationData: presentationData)
         let paneFrame = CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height))
         
         var visiblePaneIndices: [Int] = []
@@ -536,6 +563,10 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
             self.pendingSwitchToPaneKey = nil
             previousPaneKey = self.currentPaneKey
             self.currentPaneKey = pendingSwitchToPaneKey
+            if self.isAwaitingFirstPaneAfterReset {
+                self.isAwaitingFirstPaneAfterReset = false
+                self.updateBackgroundColor(presentationData: presentationData)
+            }
             updatedCurrentIndex = availablePanes.firstIndex(of: pendingSwitchToPaneKey)
             if let previousPaneKey = previousPaneKey, let previousIndex = availablePanes.firstIndex(of: previousPaneKey), let updatedCurrentIndex = updatedCurrentIndex {
                 if updatedCurrentIndex < previousIndex {

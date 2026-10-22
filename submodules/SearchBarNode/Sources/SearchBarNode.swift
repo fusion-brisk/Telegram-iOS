@@ -29,6 +29,41 @@ private func generateClearIcon(color: UIColor) -> UIImage? {
     return generateTintedImage(image: UIImage(bundleImageName: "Components/Search Bar/Clear"), color: color)
 }
 
+// Geometry of the removable peer token's badge (`TokenNode`), in the 24 pt avatar's coordinates.
+private let removeBadgeDiscDiameter: CGFloat = 16.0
+/// Width of the ring cut out of the avatar around the disc.
+private let removeBadgeRingWidth: CGFloat = 1.5
+/// The disc's edge overhangs the avatar by 6 pt right and up.
+private let removeBadgeDiscCenter = CGPoint(x: 22.0, y: 2.0)
+/// The disc centred on a canvas with room for the ring plus half a point of air.
+private let removeBadgeImageSize = CGSize(width: 20.0, height: 20.0)
+
+/// The badge's ring is a hole cut in the avatar under it (`TokenNode.avatarMaskLayer`) and its cross is cleared out of
+/// the disc, so both show whatever the search field draws behind the token (native glass in the chat list, any theme).
+private func generateRemoveBadgeImage(fillColor: UIColor) -> UIImage? {
+    return generateImage(removeBadgeImageSize, contextGenerator: { size, context in
+        context.clear(CGRect(origin: CGPoint(), size: size))
+        let diameter = removeBadgeDiscDiameter
+        let center = CGPoint(x: size.width / 2.0, y: size.height / 2.0)
+        context.setFillColor(fillColor.cgColor)
+        context.fillEllipse(in: CGRect(x: center.x - diameter / 2.0, y: center.y - diameter / 2.0, width: diameter, height: diameter))
+        context.setBlendMode(.clear)
+        context.setLineWidth(1.6)
+        context.setLineCap(.round)
+        // With the round caps the cross spans 6.2 pt, about 40% of the disc, lighter than the field's clear glyph.
+        let arm: CGFloat = 2.3
+        context.move(to: CGPoint(x: center.x - arm, y: center.y - arm))
+        context.addLine(to: CGPoint(x: center.x + arm, y: center.y + arm))
+        context.move(to: CGPoint(x: center.x + arm, y: center.y - arm))
+        context.addLine(to: CGPoint(x: center.x - arm, y: center.y + arm))
+        context.strokePath()
+    })
+}
+
+private func removeBadgeImage(theme: SearchBarNodeTheme) -> UIImage? {
+    return generateRemoveBadgeImage(fillColor: theme.inputClear)
+}
+
 private func generateBackground(foregroundColor: UIColor, diameter: CGFloat) -> UIImage? {
     return generateImage(CGSize(width: diameter, height: diameter), contextGenerator: { size, context in
         context.setBlendMode(.copy)
@@ -64,8 +99,14 @@ public struct SearchBarToken {
     public let title: String
     public let style: Style?
     public let permanent: Bool
+    /// Drawn only for tokens with a `peer`: a clear badge on the avatar's top-right corner; a tap anywhere on the
+    /// token removes it through `SearchBarTextField.didRemoveToken`, bypassing `permanent`.
+    public let removable: Bool
+    /// VoiceOver custom action name for removing the token (exposed on the text field, the token itself is not an
+    /// accessibility element).
+    public let removeAccessibilityActionName: String?
     
-    public init(id: AnyHashable, context: AccountContext? = nil, icon: UIImage?, iconOffset: CGFloat? = 0.0, peer: (EnginePeer, AccountContext, PresentationTheme)? = nil, isTag: Bool = false, reaction: MessageReaction.Reaction? = nil, emojiFile: TelegramMediaFile? = nil, title: String, style: Style? = nil, permanent: Bool) {
+    public init(id: AnyHashable, context: AccountContext? = nil, icon: UIImage?, iconOffset: CGFloat? = 0.0, peer: (EnginePeer, AccountContext, PresentationTheme)? = nil, isTag: Bool = false, reaction: MessageReaction.Reaction? = nil, emojiFile: TelegramMediaFile? = nil, title: String, style: Style? = nil, permanent: Bool, removable: Bool = false, removeAccessibilityActionName: String? = nil) {
         self.id = id
         self.context = context
         self.icon = icon
@@ -77,6 +118,8 @@ public struct SearchBarToken {
         self.title = title
         self.style = style
         self.permanent = permanent
+        self.removable = removable
+        self.removeAccessibilityActionName = removeAccessibilityActionName
     }
 }
 
@@ -88,12 +131,15 @@ private final class TokenNode: ASDisplayNode {
     let titleNode: ASTextNode
     let backgroundNode: ASImageNode
     let avatarNode: AvatarNode?
+    let removeBadgeNode: ASImageNode?
+    private let avatarMaskLayer: CAShapeLayer?
     var emojiView: ComponentView<Empty>?
     
     var isSelected: Bool = false
     var isCollapsed: Bool = false
     
     var tapped: (() -> Void)?
+    var removeTapped: (() -> Void)?
     
     init(theme: SearchBarNodeTheme, token: SearchBarToken) {
         self.theme = theme
@@ -117,6 +163,29 @@ private final class TokenNode: ASDisplayNode {
             self.avatarNode = nil
         }
         
+        if token.removable, token.peer != nil {
+            let removeBadgeNode = ASImageNode()
+            removeBadgeNode.displaysAsynchronously = false
+            removeBadgeNode.displayWithoutProcessing = true
+            removeBadgeNode.image = removeBadgeImage(theme: theme)
+            self.removeBadgeNode = removeBadgeNode
+            
+            // The ring is a hole in the avatar around the disc: radius 9.5 (8 pt disc radius + 1.5 pt ring).
+            let avatarBounds = CGRect(origin: CGPoint(), size: CGSize(width: 24.0, height: 24.0))
+            let holeRadius = removeBadgeDiscDiameter / 2.0 + removeBadgeRingWidth
+            let avatarMaskPath = CGMutablePath()
+            avatarMaskPath.addRect(avatarBounds)
+            avatarMaskPath.addEllipse(in: CGRect(x: removeBadgeDiscCenter.x - holeRadius, y: removeBadgeDiscCenter.y - holeRadius, width: holeRadius * 2.0, height: holeRadius * 2.0))
+            let avatarMaskLayer = CAShapeLayer()
+            avatarMaskLayer.frame = avatarBounds
+            avatarMaskLayer.fillRule = .evenOdd
+            avatarMaskLayer.path = avatarMaskPath
+            self.avatarMaskLayer = avatarMaskLayer
+        } else {
+            self.removeBadgeNode = nil
+            self.avatarMaskLayer = nil
+        }
+        
         super.init()
         
         self.clipsToBounds = true
@@ -125,6 +194,10 @@ private final class TokenNode: ASDisplayNode {
         if let avatarNode = self.avatarNode, let (peer, context, theme) = token.peer {
             avatarNode.setPeer(context: context, theme: theme, peer: peer, clipStyle: .roundedRect, displayDimensions: CGSize(width: 24.0, height: 24.0))
             self.containerNode.addSubnode(avatarNode)
+            if let removeBadgeNode = self.removeBadgeNode {
+                avatarNode.layer.mask = self.avatarMaskLayer
+                self.containerNode.addSubnode(removeBadgeNode)
+            }
         } else {
             self.containerNode.addSubnode(self.backgroundNode)
             
@@ -153,6 +226,10 @@ private final class TokenNode: ASDisplayNode {
     }
     
     @objc private func tapGesture() {
+        if self.removeBadgeNode != nil {
+            self.removeTapped?()
+            return
+        }
         self.tapped?()
     }
     
@@ -168,6 +245,14 @@ private final class TokenNode: ASDisplayNode {
             if let avatarNode = self.avatarNode {
                 avatarNode.layer.animateScale(from: 0.1, to: 1.0, duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring)
                 avatarNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.15)
+                if let removeBadgeNode = self.removeBadgeNode {
+                    // Scales around the avatar's centre like the avatar and its mask hole, so the ring stays concentric
+                    // (0.9 = 1 - the 0.1 start scale).
+                    let offset = CGPoint(x: (avatarNode.position.x - removeBadgeNode.position.x) * 0.9, y: (avatarNode.position.y - removeBadgeNode.position.y) * 0.9)
+                    removeBadgeNode.layer.animatePosition(from: offset, to: CGPoint(), duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring, additive: true)
+                    removeBadgeNode.layer.animateScale(from: 0.1, to: 1.0, duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring)
+                    removeBadgeNode.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.15)
+                }
             }
             
             self.iconNode.layer.animateScale(from: 0.1, to: 1.0, duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring)
@@ -213,6 +298,9 @@ private final class TokenNode: ASDisplayNode {
                 self.iconNode.image = generateTintedImage(image: image, color: foregroundColor)
             }
             self.titleNode.attributedText = NSAttributedString(string: token.title, font: Font.regular(token.isTag ? 14.0 : 17.0), textColor: foregroundColor)
+            if let removeBadgeNode = self.removeBadgeNode {
+                removeBadgeNode.image = removeBadgeImage(theme: theme)
+            }
         }
     }
     
@@ -296,9 +384,21 @@ private final class TokenNode: ASDisplayNode {
         
         let size: CGSize
         if let avatarNode = self.avatarNode {
-            size = CGSize(width: height, height: height)
-            transition.updateFrame(node: self.containerNode, frame: CGRect(origin: CGPoint(), size: size))
-            transition.updateFrame(node: avatarNode, frame: CGRect(origin: CGPoint(), size: size))
+            if let removeBadgeNode = self.removeBadgeNode {
+                // The badge overhangs the avatar's top-right corner by 6 pt, so the node spans the field height (clipsToBounds
+                // stays on) and ends at the badge image's right edge; the avatar is centred vertically.
+                let tokenHeight = max(height, constrainedSize.height)
+                let avatarFrame = CGRect(origin: CGPoint(x: 0.0, y: floor((tokenHeight - 24.0) / 2.0)), size: CGSize(width: 24.0, height: 24.0))
+                let badgeFrame = CGRect(origin: CGPoint(x: avatarFrame.minX + removeBadgeDiscCenter.x - removeBadgeImageSize.width / 2.0, y: avatarFrame.minY + removeBadgeDiscCenter.y - removeBadgeImageSize.height / 2.0), size: removeBadgeImageSize)
+                size = CGSize(width: badgeFrame.maxX, height: tokenHeight)
+                transition.updateFrame(node: self.containerNode, frame: CGRect(origin: CGPoint(), size: size))
+                transition.updateFrame(node: avatarNode, frame: avatarFrame)
+                transition.updateFrame(node: removeBadgeNode, frame: badgeFrame)
+            } else {
+                size = CGSize(width: height, height: height)
+                transition.updateFrame(node: self.containerNode, frame: CGRect(origin: CGPoint(), size: size))
+                transition.updateFrame(node: avatarNode, frame: CGRect(origin: CGPoint(), size: size))
+            }
         } else {
             size = CGSize(width: self.isCollapsed ? height : width, height: height)
             transition.updateFrame(node: self.containerNode, frame: CGRect(origin: CGPoint(), size: size))
@@ -311,6 +411,7 @@ private final class TokenNode: ASDisplayNode {
 
 private class SearchBarTextField: UITextField, UIScrollViewDelegate {
     public var didDeleteBackward: (() -> Bool)?
+    public var didRemoveToken: ((AnyHashable) -> Void)?
     
     let placeholderLabel: ImmediateTextNode
     var placeholderString: NSAttributedString? {
@@ -327,6 +428,7 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
         didSet {
             self._selectedTokenIndex = nil
             self.layoutTokens(transition: .animated(duration: 0.2, curve: .easeInOut))
+            self.updateAccessibilityCustomActions()
             self.setNeedsLayout()
             self.updateCursorColor()
         }
@@ -351,6 +453,32 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
         } else {
             super.tintColor = self._tintColor
         }
+    }
+    
+    /// Actions the search's owner adds to the field; listed after the ones the tokens provide.
+    var accessoryAccessibilityCustomActions: [UIAccessibilityCustomAction] = [] {
+        didSet {
+            self.updateAccessibilityCustomActions()
+        }
+    }
+    
+    private func updateAccessibilityCustomActions() {
+        var actions: [UIAccessibilityCustomAction] = []
+        for token in self.tokens {
+            guard token.removable, let name = token.removeAccessibilityActionName else {
+                continue
+            }
+            let tokenId = token.id
+            actions.append(UIAccessibilityCustomAction(name: name, actionHandler: { [weak self] _ in
+                guard let self, let didRemoveToken = self.didRemoveToken else {
+                    return false
+                }
+                didRemoveToken(tokenId)
+                return true
+            }))
+        }
+        actions.append(contentsOf: self.accessoryAccessibilityCustomActions)
+        self.accessibilityCustomActions = actions.isEmpty ? nil : actions
     }
     
     var _tintColor: UIColor = .black
@@ -395,6 +523,10 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
                     }
                 }
             }
+            let tokenId = token.id
+            tokenNode.removeTapped = { [weak self] in
+                self?.didRemoveToken?(tokenId)
+            }
             let isSelected = i == self.selectedTokenIndex
             if i < self.tokens.count - 1 && isSelected {
                 hasSelected = true
@@ -411,6 +543,7 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
         for id in removeKeys {
             if let itemNode = self.tokenNodes.removeValue(forKey: id) {
                 if transition.isAnimated {
+                    itemNode.isUserInteractionEnabled = false
                     itemNode.animateOut()
                 } else {
                     itemNode.removeFromSupernode()
@@ -483,7 +616,11 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
                 tokenNodeTransition.updateFrame(node: tokenNode, frame: nodeFrame)
             }
             
-            tokenNode.hitTestSlop = UIEdgeInsets(top: 0.0, left: -minSpacing / 2.0, bottom: 0.0, right: -minSpacing / 2.0)
+            if tokenNode.removeBadgeNode != nil {
+                tokenNode.hitTestSlop = UIEdgeInsets(top: 0.0, left: -minSpacing / 2.0, bottom: 0.0, right: i == tokenSizes.count - 1 ? -8.0 : -minSpacing / 2.0)
+            } else {
+                tokenNode.hitTestSlop = UIEdgeInsets(top: 0.0, left: -minSpacing / 2.0, bottom: 0.0, right: -minSpacing / 2.0)
+            }
                         
             leftOffset += nodeSize.width + minSpacing
         }
@@ -503,7 +640,10 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
             if leftOffset.isZero {
                 scrollView.contentOffset = CGPoint()
             } else if self.tokensWidth != previousTokensWidth {
-                scrollView.contentOffset = CGPoint(x: -leftOffset, y: 0.0)
+                // The text rests at the tokens' inset width (8 pt past them), where UIKit settles by itself only when
+                // the caret is at the start: a token added to an empty field is re-scrolled there ~100 ms later, a token
+                // re-added while there is text is not and stays 8 pt clipped on the left.
+                scrollView.contentOffset = CGPoint(x: -self.tokensInsetWidth, y: 0.0)
             }
             self.updateTokenContainerPosition(transition: transition)
         }
@@ -899,6 +1039,18 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
     public var focusUpdated: ((Bool) -> Void)?
     
     public var tokensUpdated: (([SearchBarToken]) -> Void)?
+    /// A removable token was removed while the field was not first responder; its typing history is dropped on the
+    /// next focus (see didRemoveToken).
+    private var clearsUndoHistoryOnFocus = false
+
+    /// Extra VoiceOver custom actions for the text field, after the ones its tokens provide.
+    public var accessoryAccessibilityCustomActions: [UIAccessibilityCustomAction] {
+        get {
+            return self.textField.accessoryAccessibilityCustomActions
+        } set(value) {
+            self.textField.accessoryAccessibilityCustomActions = value
+        }
+    }
     
     private let inlineSearchPlaceholder: SearchBarPlaceholderNode
     private var inlineSearchPlaceholderContentsView: SearchBarPlaceholderContentView?
@@ -1106,6 +1258,23 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
                 return true
             }
             return false
+        }
+        
+        self.textField.didRemoveToken = { [weak self] tokenId in
+            guard let strongSelf = self, let index = strongSelf.tokens.firstIndex(where: { $0.id == tokenId }), strongSelf.tokens[index].removable else {
+                return
+            }
+            // The system's shake-to-undo would otherwise offer "Undo Typing" on top of the scope undo the search
+            // container shows for the same shake; typing after the removal registers fresh undo actions as usual.
+            // Out of focus the field has no undo manager and the history comes back with the focus, so it is
+            // cleared then instead.
+            if let undoManager = strongSelf.textField.undoManager {
+                undoManager.removeAllActions()
+            } else {
+                strongSelf.clearsUndoHistoryOnFocus = true
+            }
+            strongSelf.tokens.remove(at: index)
+            strongSelf.tokensUpdated?(strongSelf.tokens)
         }
         
         self.cancelButton.addTarget(self, action: #selector(self.cancelPressed), forControlEvents: .touchUpInside)
@@ -1569,6 +1738,10 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
     }
     
     public func textFieldDidBeginEditing(_ textField: UITextField) {
+        if self.clearsUndoHistoryOnFocus {
+            self.clearsUndoHistoryOnFocus = false
+            self.textField.undoManager?.removeAllActions()
+        }
         self.focusUpdated?(true)
     }
     

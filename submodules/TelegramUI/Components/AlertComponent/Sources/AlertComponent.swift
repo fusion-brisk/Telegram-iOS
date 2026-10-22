@@ -598,15 +598,19 @@ open class AlertScreen: ViewControllerComponentContainer, KeyShortcutResponder {
         let actionAlignment: ActionAligmnent
         let dismissOnOutsideTap: Bool
         let allowInputInset: Bool
+        /// Closing the alert leaves the first responder as it is instead of ending editing in the window.
+        let keepsFirstResponder: Bool
         
         public init(
             actionAlignment: ActionAligmnent = .default,
             dismissOnOutsideTap: Bool = true,
-            allowInputInset: Bool = false
+            allowInputInset: Bool = false,
+            keepsFirstResponder: Bool = false
         ) {
             self.actionAlignment = actionAlignment
             self.dismissOnOutsideTap = dismissOnOutsideTap
             self.allowInputInset = allowInputInset
+            self.keepsFirstResponder = keepsFirstResponder
         }
     }
     
@@ -665,6 +669,7 @@ open class AlertScreen: ViewControllerComponentContainer, KeyShortcutResponder {
     
     private var processedDidAppear: Bool = false
     private var processedDidDisappear: Bool = false
+    private let keepsFirstResponder: Bool
     
     private let readyValue = Promise<Bool>(true)
     override public var ready: Promise<Bool> {
@@ -680,6 +685,7 @@ open class AlertScreen: ViewControllerComponentContainer, KeyShortcutResponder {
         updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)
     ) {
         let componentReady = Promise<Bool>()
+        self.keepsFirstResponder = configuration.keepsFirstResponder
         
         super.init(
             component: AlertScreenComponent(
@@ -829,7 +835,9 @@ open class AlertScreen: ViewControllerComponentContainer, KeyShortcutResponder {
         if !self.processedDidDisappear {
             self.processedDidDisappear = true
             
-            self.view.window?.endEditing(true)
+            if !self.keepsFirstResponder {
+                self.view.window?.endEditing(true)
+            }
             
             if let componentView = self.node.hostView.componentView as? AlertScreenComponent.View {
                 let dismissedByTapOutside = componentView.dismissedByTapOutside

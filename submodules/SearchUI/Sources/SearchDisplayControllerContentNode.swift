@@ -10,6 +10,8 @@ open class SearchDisplayControllerContentNode: ASDisplayNode {
     public final var dismissInput: (() -> Void)?
     public final var cancel: (() -> Void)?
     public final var setQuery: ((NSAttributedString?, [SearchBarToken], String) -> Void)?
+    /// Extra VoiceOver custom actions for the search field, beside the ones its tokens provide.
+    public final var setAccessoryAccessibilityCustomActions: (([UIAccessibilityCustomAction]) -> Void)?
     public final var setPlaceholder: ((String) -> Void)?
     
     open var animateBackgroundAppearance: Bool {

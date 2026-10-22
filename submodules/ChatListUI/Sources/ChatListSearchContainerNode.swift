@@ -40,6 +40,7 @@ import SectionTitleContextItem
 import EdgeEffect
 import ComponentFlow
 import ComponentDisplayAdapters
+import AlertComponent
 
 private enum ChatListTokenId: Int32 {
     case archive
@@ -122,6 +123,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private var folder: (Int32, String)?
     private let displaySearchFilters: Bool
     private let hasDownloads: Bool
+    private let allowsForumScopeRemoval: Bool
     private var interaction: ChatListSearchInteraction?
     private let openMessage: (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void
     private let navigationController: NavigationController?
@@ -153,6 +155,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private var suggestedFilters: [ChatListSearchFilter]?
     private let suggestedFiltersDisposable = MetaDisposable()
     private var forumPeer: EnginePeer?
+    /// The forum whose scope was just removed: a shake offers to undo until the query text changes.
+    private struct UndoableForumScope {
+        let peer: EnginePeer
+        let query: String
+    }
+    private var undoableForumScope: UndoableForumScope?
+    /// The undo alert while it is on screen; weak, so it cannot outlive the alert however the alert goes away.
+    private weak var undoAlertController: ViewController?
     private var hasPublicPostsTab = false
     private var showPublicPostsTab = false
     public var displayGlobalPostsNewBadge = false
@@ -184,7 +194,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private var recentAppsDisposable: Disposable?
     private var refreshedGlobalPostSearchStateDisposable: Disposable?
     
-    public init(context: AccountContext, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, filter: ChatListNodePeersFilter, requestPeerType: [ReplyMarkupButtonRequestPeerType]?, excludedPeerIds: Set<EnginePeer.Id> = [], location: ChatListControllerLocation, communityId: EnginePeer.Id? = nil, folder: (Int32, String)?, displaySearchFilters: Bool, hasDownloads: Bool, initialFilter: ChatListSearchFilter = .chats, openPeer originalOpenPeer: @escaping (EnginePeer, EnginePeer?, Int64?, Bool) -> Void, openDisabledPeer: @escaping (EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void, openRecentPeerOptions: @escaping (EnginePeer) -> Void, openMessage originalOpenMessage: @escaping (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void, addContact: ((String) -> Void)?, peerContextAction: ((EnginePeer, ChatListSearchContextActionSource, ASDisplayNode, ContextGesture?, CGPoint?) -> Void)?, present: @escaping (ViewController, Any?) -> Void, presentInGlobalOverlay: @escaping (ViewController, Any?) -> Void, navigationController: NavigationController?, parentController: @escaping () -> ViewController?) {
+    public init(context: AccountContext, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, filter: ChatListNodePeersFilter, requestPeerType: [ReplyMarkupButtonRequestPeerType]?, excludedPeerIds: Set<EnginePeer.Id> = [], location: ChatListControllerLocation, communityId: EnginePeer.Id? = nil, folder: (Int32, String)?, displaySearchFilters: Bool, hasDownloads: Bool, allowsForumScopeRemoval: Bool = false, initialFilter: ChatListSearchFilter = .chats, openPeer originalOpenPeer: @escaping (EnginePeer, EnginePeer?, Int64?, Bool) -> Void, openDisabledPeer: @escaping (EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void, openRecentPeerOptions: @escaping (EnginePeer) -> Void, openMessage originalOpenMessage: @escaping (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void, addContact: ((String) -> Void)?, peerContextAction: ((EnginePeer, ChatListSearchContextActionSource, ASDisplayNode, ContextGesture?, CGPoint?) -> Void)?, present: @escaping (ViewController, Any?) -> Void, presentInGlobalOverlay: @escaping (ViewController, Any?) -> Void, navigationController: NavigationController?, parentController: @escaping () -> ViewController?) {
         var initialFilter = initialFilter
         if case .chats = initialFilter, case .forum = location {
             initialFilter = .topics
@@ -204,6 +214,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         
         self.displaySearchFilters = displaySearchFilters
         self.hasDownloads = hasDownloads
+        self.allowsForumScopeRemoval = allowsForumScopeRemoval
         self.navigationController = navigationController
         self.presentationData = updatedPresentationData?.initial ?? context.sharedContext.currentPresentationData.with { $0 }
         
@@ -231,14 +242,16 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         
         self.addSubnode(self.paneContainerNode)
                 
-        let interaction = ChatListSearchInteraction(openPeer: { peer, chatPeer, threadId, value in
+        let interaction = ChatListSearchInteraction(openPeer: { [weak self] peer, chatPeer, threadId, value in
+            self?.setUndoableForumScope(nil)
             originalOpenPeer(peer, chatPeer, threadId, value)
             if peer.id.namespace != Namespaces.Peer.SecretChat {
                 context.engine.accountData.addAppLogEvent(type: "search_global_open_peer")
             }
         }, openDisabledPeer: { peer, threadId, reason in
             openDisabledPeer(peer, threadId, reason)
-        }, openMessage: { peer, threadId, messageId, deactivateOnAction in
+        }, openMessage: { [weak self] peer, threadId, messageId, deactivateOnAction in
+            self?.setUndoableForumScope(nil)
             originalOpenMessage(peer, threadId, messageId, deactivateOnAction)
             if peer.id.namespace != Namespaces.Peer.SecretChat {
                 context.engine.accountData.addAppLogEvent(type: "search_global_open_message", data: .dictionary(["msg_id": .number(Double(messageId.id))]))
@@ -589,6 +602,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     }
     
     deinit {
+        self.setUndoableForumScope(nil)
         self.activeActionDisposable.dispose()
         self.presentationDataDisposable?.dispose()
         self.suggestedFiltersDisposable.dispose()
@@ -602,6 +616,13 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     
     public override func didLoad() {
         super.didLoad()
+    }
+    
+    override public func didExitHierarchy() {
+        super.didExitHierarchy()
+        // The search is pushed over or closed (a chat opened, Cancel): the undo and the window's shake hook must not
+        // outlive it.
+        self.setUndoableForumScope(nil)
     }
     
     public override var hasDim: Bool {
@@ -634,6 +655,103 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         return self.searchOptionsValue ?? ChatListSearchOptions(peer: nil, date: nil, folder: nil)
     }
     
+    private func forumScopeToken(peer: EnginePeer) -> SearchBarToken {
+        return SearchBarToken(
+            id: ChatListTokenId.forum.rawValue,
+            icon: nil,
+            iconOffset: -1.0,
+            peer: (peer, self.context, self.presentationData.theme),
+            title: peer.compactDisplayTitle,
+            permanent: true,
+            removable: self.allowsForumScopeRemoval,
+            removeAccessibilityActionName: self.allowsForumScopeRemoval ? self.presentationData.strings.ChatList_Search_RemoveForumScope : nil
+        )
+    }
+    
+    private func setUndoableForumScope(_ value: UndoableForumScope?) {
+        let hadUndoableForumScope = self.undoableForumScope != nil
+        self.undoableForumScope = value
+        if value != nil {
+            self.context.sharedContext.mainWindow?.motionShake = { [weak self] in
+                self?.handleShake()
+            }
+            // Shaking is not an option with VoiceOver: the field offers the same undo as a custom action.
+            self.setAccessoryAccessibilityCustomActions?([UIAccessibilityCustomAction(name: self.presentationData.strings.ChatList_Search_UndoForumScopeRemoval, actionHandler: { [weak self] _ in
+                guard let self, self.undoableForumScope != nil else {
+                    return false
+                }
+                self.restoreForumScope()
+                return true
+            })])
+        } else if hadUndoableForumScope {
+            // Only the container that had the undo releases the hook: a search that never had it (the forward picker's,
+            // one with the flag off) must not wipe the hook of the search that has it.
+            if let undoAlertController = self.undoAlertController {
+                self.undoAlertController = nil
+                undoAlertController.dismiss()
+            }
+            self.context.sharedContext.mainWindow?.motionShake = nil
+            self.setAccessoryAccessibilityCustomActions?([])
+        }
+    }
+    
+    private func handleShake() {
+        // Context menus and other global overlays keep the search in the hierarchy: a shake under them shows the alert below the overlay.
+        // Under VoiceOver the undo is the field's custom action; the alert has no accessibility labels.
+        guard self.undoableForumScope != nil, self.undoAlertController == nil, self.view.window != nil, self.isUserInteractionEnabled, !UIAccessibility.isVoiceOverRunning else {
+            return
+        }
+        let strings = self.presentationData.strings
+        // Mirrors the system shake-to-undo alert: one centred line in regular 17 pt and two neutral buttons.
+        // AlertTitleComponent is bold only, hence attributed text (its colour is fixed when the alert opens).
+        // keepsFirstResponder: the alert would otherwise end editing when it closes; with it the search field keeps
+        // the keyboard and the caret through Cancel and Undo.
+        let controller = AlertScreen(
+            context: self.context,
+            configuration: AlertScreen.Configuration(dismissOnOutsideTap: false, allowInputInset: true, keepsFirstResponder: true),
+            content: [
+                AnyComponentWithIdentity(id: "title", component: AnyComponent(
+                    AlertTextComponent(content: .attributed(NSAttributedString(string: strings.ChatList_Search_UndoForumScopeRemoval, font: Font.regular(17.0), textColor: self.presentationData.theme.actionSheet.primaryTextColor)), alignment: .center)
+                ))
+            ],
+            actions: [
+                AlertScreen.Action(title: strings.Common_Cancel, action: { [weak self] in
+                    self?.undoAlertController = nil
+                }),
+                AlertScreen.Action(title: strings.Undo_Undo, action: { [weak self] in
+                    self?.undoAlertController = nil
+                    self?.restoreForumScope()
+                })
+            ]
+        )
+        self.undoAlertController = controller
+        self.present?(controller, nil)
+    }
+    
+    private func restoreForumScope() {
+        guard let current = self.undoableForumScope, case .chatList(groupId: .root) = self.location else {
+            return
+        }
+        self.setUndoableForumScope(nil)
+        self.transitionFraction = 0.0
+        self.location = .forum(peerId: current.peer.id)
+        self.forumPeer = current.peer
+        // The forum's first pane: with .chats, which a forum has no pane for, the tab pill hides and fades back in.
+        self.selectedFilter = .filter(.topics)
+        self.selectedFilterPromise.set(.single(self.selectedFilter))
+        self.paneContainerNode.reset(location: self.location)
+        if self.stateValue.selectedMessageIds != nil {
+            self.updateState { state in
+                return state.withUpdatedSelectedMessageIds(nil)
+            }
+        }
+        if let (layout, navigationBarHeight) = self.validLayout {
+            self.containerLayoutUpdated(layout, navigationBarHeight: navigationBarHeight, transition: .animated(duration: 0.3, curve: .easeInOut))
+        }
+        self.updateSearchOptions(self.searchOptionsValue)
+        self.hapticFeedback.impact(.light)
+    }
+    
     public override func searchTokensUpdated(tokens: [SearchBarToken]) {
         var updatedOptions = self.searchOptionsValue
         var tokensIdSet = Set<AnyHashable>()
@@ -644,6 +762,23 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location, !tokens.contains(where: { $0.id == AnyHashable(ChatListTokenId.archive.rawValue) }) {
             self.location = .chatList(groupId: .root)
             self.paneContainerNode.location = self.location
+        }
+        if case .forum = self.location, self.allowsForumScopeRemoval, let forumPeer = self.forumPeer, !tokens.contains(where: { $0.id == AnyHashable(ChatListTokenId.forum.rawValue) }) {
+            self.transitionFraction = 0.0
+            self.location = .chatList(groupId: .root)
+            self.selectedFilter = .filter(.chats)
+            self.selectedFilterPromise.set(.single(self.selectedFilter))
+            self.paneContainerNode.reset(location: self.location)
+            if self.stateValue.selectedMessageIds != nil {
+                self.updateState { state in
+                    return state.withUpdatedSelectedMessageIds(nil)
+                }
+            }
+            if let (layout, navigationBarHeight) = self.validLayout {
+                self.containerLayoutUpdated(layout, navigationBarHeight: navigationBarHeight, transition: .animated(duration: 0.3, curve: .easeInOut))
+            }
+            self.hapticFeedback.impact(.light)
+            self.setUndoableForumScope(UndoableForumScope(peer: forumPeer, query: self.searchQueryValue ?? ""))
         }
         
         if !tokensIdSet.contains(ChatListTokenId.date.rawValue) && updatedOptions?.date != nil {
@@ -668,7 +803,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location {
             tokens.append(SearchBarToken(id: ChatListTokenId.archive.rawValue, icon: UIImage(bundleImageName: "Chat List/Search/Archive"), iconOffset: -1.0, title: self.presentationData.strings.ChatList_Archive, permanent: false))
         } else if case .forum = self.location, let forumPeer = self.forumPeer {
-            tokens.append(SearchBarToken(id: ChatListTokenId.forum.rawValue, icon: nil, iconOffset: -1.0, peer: (forumPeer, self.context, self.presentationData.theme), title: self.presentationData.strings.ChatList_Archive, permanent: true))
+            tokens.append(self.forumScopeToken(peer: forumPeer))
         }
         
         if options?.isEmpty ?? true {
@@ -711,6 +846,10 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     }
     
     override public func searchTextUpdated(text: String) {
+        if let undoable = self.undoableForumScope, text != undoable.query {
+            self.setUndoableForumScope(nil)
+        }
+
         let searchQuery: String? = !text.isEmpty ? text : nil
 
         if !text.hasPrefix("#") && self.paneContainerNode.currentPaneKey == .publicPosts {
@@ -766,7 +905,11 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         let key: ChatListSearchPaneKey
         switch filter {
         case .topics:
-            key = .topics
+            if case .forum = self.location {
+                key = .topics
+            } else {
+                key = .chats
+            }
         case .channels:
             key = .channels
         case .media:
@@ -797,7 +940,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if case .chatList(.archive) = self.location {
             tokens.append(SearchBarToken(id: ChatListTokenId.archive.rawValue, icon: UIImage(bundleImageName: "Chat List/Search/Archive"), iconOffset: -1.0, title: self.presentationData.strings.ChatList_Archive, permanent: false))
         } else if case .forum = self.location, let forumPeer = self.forumPeer {
-            tokens.append(SearchBarToken(id: ChatListTokenId.forum.rawValue, icon: nil, iconOffset: -1.0, peer: (forumPeer, self.context, self.presentationData.theme), title: self.presentationData.strings.ChatList_Archive, permanent: true))
+            tokens.append(self.forumScopeToken(peer: forumPeer))
         }
         self.setQuery?(nil, tokens, query ?? "")
     }
@@ -917,6 +1060,8 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
                                 return lhs.index < rhs.index
                             }).map({ $0._asMessage() })), externalShare: true, immediateExternalShare: true))
                             strongSelf.dismissInput()
+                            // A sheet keeps the search in the hierarchy (no didExitHierarchy): the undo ends here.
+                            strongSelf.setUndoableForumScope(nil)
                             strongSelf.present?(shareController, nil)
                         }
                     })
@@ -1737,6 +1882,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
                     }
                 }
             }
+            self.setUndoableForumScope(nil)
             self.navigationController?.pushViewController(peerSelectionController)
         }
     }

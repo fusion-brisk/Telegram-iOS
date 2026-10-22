@@ -730,6 +730,7 @@ private enum DebugControllerEntry: ItemListNodeEntry {
     case fakeGlass(Bool)
     case forceClearGlass(Bool)
     case debugRipple(Bool)
+    case forumSearchRemovableScope(Bool)
     case inputDecTextBackend(Bool)
     case inputDecEngineEditor(Bool)
     case coreListChatBackend(Bool)
@@ -786,7 +787,7 @@ private enum DebugControllerEntry: ItemListNodeEntry {
             return DebugControllerSection.web.rawValue
         case .experimentsHeader, .keepChatNavigationStack, .skipReadHistory, .alwaysDisplayTyping, .debugRatingLayout, .crashOnSlowQueries, .crashOnMemoryPressure:
             return DebugControllerSection.experiments.rawValue
-        case .crash, .resetBiometricsData, .photoPreview, .knockoutWallpaper, .compressedEmojiCache, .storiesJpegExperiment, .checkSerializedData, .enableQuickReactionSwitch, .experimentalCompatibility, .enableDebugDataDisplay, .fakeGlass, .forceClearGlass, .debugRipple, .inputDecEngineEditor, .coreListChatBackend, .forceRLottieBackend, .respectSystemMicrophone, .useModernVideoMessagePipeline, .videoMessageCameraMode, .browserExperiment, .allForumsHaveTabs, .enableReactionOverrides, .disableReloginTokens, .liveStreamV2, .experimentalCallMute, .groupCallReferenceEngine, .playerV2, .devRequests, .enableUpdates, .pwa, .enableLocalTranslation, .testPasscodeMigration:
+        case .crash, .resetBiometricsData, .photoPreview, .knockoutWallpaper, .compressedEmojiCache, .storiesJpegExperiment, .checkSerializedData, .enableQuickReactionSwitch, .experimentalCompatibility, .enableDebugDataDisplay, .fakeGlass, .forceClearGlass, .debugRipple, .forumSearchRemovableScope, .inputDecEngineEditor, .coreListChatBackend, .forceRLottieBackend, .respectSystemMicrophone, .useModernVideoMessagePipeline, .videoMessageCameraMode, .browserExperiment, .allForumsHaveTabs, .enableReactionOverrides, .disableReloginTokens, .liveStreamV2, .experimentalCallMute, .groupCallReferenceEngine, .playerV2, .devRequests, .enableUpdates, .pwa, .enableLocalTranslation, .testPasscodeMigration:
             return DebugControllerSection.experiments.rawValue
         case .inputDecTextBackend, .springSendAnimation, .fakeWalletTransfers:
             return DebugControllerSection.experiments.rawValue
@@ -895,6 +896,9 @@ private enum DebugControllerEntry: ItemListNodeEntry {
             return 48
         case .debugRipple:
             return 49
+        case .forumSearchRemovableScope:
+            // Appended right after `fakeWalletTransfers`; see the ordering note above.
+            return 75
         case .inputDecEngineEditor:
             return 50
         case .browserExperiment:
@@ -1403,6 +1407,16 @@ private enum DebugControllerEntry: ItemListNodeEntry {
                     transaction.updateSharedData(ApplicationSpecificSharedDataKeys.experimentalUISettings, { settings in
                         var settings = settings?.get(ExperimentalUISettings.self) ?? ExperimentalUISettings.defaultSettings
                         settings.debugRipple = value
+                        return EnginePreferencesEntry(settings)
+                    })
+                }).start()
+            })
+        case let .forumSearchRemovableScope(value):
+            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Forum search: removable scope", value: value, sectionId: self.section, style: .blocks, updated: { value in
+                let _ = arguments.sharedContext.accountManager.transaction ({ transaction in
+                    transaction.updateSharedData(ApplicationSpecificSharedDataKeys.experimentalUISettings, { settings in
+                        var settings = settings?.get(ExperimentalUISettings.self) ?? ExperimentalUISettings.defaultSettings
+                        settings.forumSearchRemovableScope = value
                         return EnginePreferencesEntry(settings)
                     })
                 }).start()
@@ -1988,6 +2002,7 @@ private func debugControllerEntries(context: AccountContext?, sharedContext: Sha
         if let data = context?.currentAppConfiguration.with({ $0 }).data, let isDev = data["dev"] as? Double, isDev == 1.0 {
             entries.append(.fakeWalletTransfers(experimentalSettings.fakeWalletTransfers))
         }
+        entries.append(.forumSearchRemovableScope(experimentalSettings.forumSearchRemovableScope))
         
         entries.append(.logTranslationRecognition(experimentalSettings.logLanguageRecognition))
         entries.append(.resetTranslationStates)

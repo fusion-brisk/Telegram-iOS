@@ -86,12 +86,17 @@ public final class SearchDisplayController {
                 searchBar.tokens = tokens
                 searchBar.text = query
                 if previousTokens.count < tokens.count && !isFirstTime {
-                    if let lastToken = tokens.last, !lastToken.permanent {
+                    // Select the last token only when a non-permanent token was just added; a permanent token
+                    // re-added in front (the forum scope coming back) must not select an older chip.
+                    if let lastToken = tokens.last, !lastToken.permanent, tokens.contains(where: { token in !token.permanent && !previousTokens.contains(where: { $0.id == token.id }) }) {
                         searchBar.selectLastToken()
                     }
                 }
                 isFirstTime = false
             }
+        }
+        self.contentNode.setAccessoryAccessibilityCustomActions = { [weak self] actions in
+            self?.searchBar?.accessoryAccessibilityCustomActions = actions
         }
         if let placeholder = placeholder {
             self.searchBar?.placeholderString = NSAttributedString(string: placeholder, font: Font.regular(17.0), textColor: presentationData.theme.rootController.navigationSearchBar.inputPlaceholderTextColor)

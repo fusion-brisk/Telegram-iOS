@@ -632,7 +632,10 @@ private class SearchBarTextField: UITextField, UIScrollViewDelegate {
             if leftOffset.isZero {
                 scrollView.contentOffset = CGPoint()
             } else if self.tokensWidth != previousTokensWidth {
-                scrollView.contentOffset = CGPoint(x: -leftOffset, y: 0.0)
+                // The text rests at the tokens' inset width (8 pt past them), where UIKit settles by itself only when
+                // the caret is at the start: a token added to an empty field is re-scrolled there ~100 ms later, a token
+                // re-added while there is text is not and stays 8 pt clipped on the left.
+                scrollView.contentOffset = CGPoint(x: -self.tokensInsetWidth, y: 0.0)
             }
             self.updateTokenContainerPosition(transition: transition)
         }
@@ -1028,6 +1031,10 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
     public var focusUpdated: ((Bool) -> Void)?
     
     public var tokensUpdated: (([SearchBarToken]) -> Void)?
+    /// A removable token was removed while the field was not first responder; its typing history is dropped on the
+    /// next focus (see didRemoveToken).
+    private var clearsUndoHistoryOnFocus = false
+
     private let inlineSearchPlaceholder: SearchBarPlaceholderNode
     private var inlineSearchPlaceholderContentsView: SearchBarPlaceholderContentView?
     
@@ -1239,6 +1246,15 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
         self.textField.didRemoveToken = { [weak self] tokenId in
             guard let strongSelf = self, let index = strongSelf.tokens.firstIndex(where: { $0.id == tokenId }), strongSelf.tokens[index].removable else {
                 return
+            }
+            // The system's shake-to-undo would otherwise offer "Undo Typing" on top of the scope undo the search
+            // container shows for the same shake; typing after the removal registers fresh undo actions as usual.
+            // Out of focus the field has no undo manager and the history comes back with the focus, so it is
+            // cleared then instead.
+            if let undoManager = strongSelf.textField.undoManager {
+                undoManager.removeAllActions()
+            } else {
+                strongSelf.clearsUndoHistoryOnFocus = true
             }
             strongSelf.tokens.remove(at: index)
             strongSelf.tokensUpdated?(strongSelf.tokens)
@@ -1705,6 +1721,10 @@ public class SearchBarNode: ASDisplayNode, UITextFieldDelegate {
     }
     
     public func textFieldDidBeginEditing(_ textField: UITextField) {
+        if self.clearsUndoHistoryOnFocus {
+            self.clearsUndoHistoryOnFocus = false
+            self.textField.undoManager?.removeAllActions()
+        }
         self.focusUpdated?(true)
     }
     

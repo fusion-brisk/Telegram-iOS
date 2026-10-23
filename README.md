@@ -9,7 +9,8 @@ account with fixture chats.
 
 | File | What it shows |
 |------|---------------|
-| `videos/feature-1-demo.mp4` | 25.6 s edited demo: the query `strava` finds nothing inside the "Running Club" forum, one tap on the token shows public channels, bots and the Posts tab, a shake and Undo bring the forum scope back. |
+| `videos/feature-1-demo-vertical.mp4` | 25.6 s edited demo, 9:16 (1080x1920) for watching on a phone: the query `strava` finds nothing inside the "Running Club" forum, one tap on the token shows public channels, bots and the Posts tab, a shake and Undo bring the forum scope back. |
+| `videos/feature-1-demo.mp4` | The same cut in 16:9 (1920x1080) for a desktop screen. |
 | `videos/feature-1-forum-search-unscope.mp4` | 16 s raw take, light theme: scoped search, tap on the token, global results, shake, Undo. |
 | `videos/feature-1-forum-search-unscope-dark.mp4` | 13 s raw take, dark theme, same scenario. |
 | `videos/feature-1-before.mp4` | 15 s, the same forum search with the flag off: upstream behaviour, the token cannot be removed. |
